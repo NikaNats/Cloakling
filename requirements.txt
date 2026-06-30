@@ -1,0 +1,25 @@
+# --- Core Automation & Stealth Browser ---
+cloakbrowser[geoip]>=0.4.5  # Modified Chromium with GeoIP offline database support
+playwright>=1.40            # Browser automation engine
+patchright>=1.40            # Scrapling's stealth driver (Playwright modification)
+
+# --- Parsing & DOM Extraction ---
+scrapling>=0.4.9            # Adaptive HTML/CSS/XPath parser
+lxml>=6.1.1                 # High-speed XML/HTML parser (Scrapling sub-module)
+cssselect>=1.4.0            # CSS selector support
+
+# --- Advanced Evasion & Fingerprinting ---
+browserforge>=1.0.2         # Real-user digital fingerprint (Headers, Client Hints) generator
+
+# --- High-Performance Serialization & Validation ---
+msgspec>=0.18.6             # Ultra-fast JSON/binary parser and validator (faster than orjson)
+orjson>=3.11.9              # Additional fast JSON support
+
+# --- Network & Protocols ---
+httpx[socks]>=0.28.1        # Asynchronous HTTP client with SOCKS5 proxy support
+socksio>=1.0.0              # Native SOCKS protocol handling for httpx
+geoip2>=4.8.0               # Interface for MaxMind GeoIP2 database communication
+
+# --- System & Resilience ---
+structlog>=25.5.0           # Structured logging (JSON Output)
+python-dotenv>=1.0.1        # Automatic loading of environment variables (.env)

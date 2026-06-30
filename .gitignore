@@ -1,0 +1,22 @@
+# --- Private Configuration & Credentials ---
+.env
+
+# --- Local Cache & Proxies ---
+socks5.txt
+
+# --- CloakBrowser Profiles ---
+.cloakbrowser_profiles/
+.cloakbrowser_profiles*
+
+# --- Python Bytecode & Environments ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# --- IDE Settings ---
+.vscode/
+.idea/
