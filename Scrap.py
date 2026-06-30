@@ -16,13 +16,13 @@ from cloakbrowser import launch_persistent_context_async
 from dotenv import load_dotenv
 from scrapling import Selector
 
-# browserforge import preserved for integrated support
+# Attempt to import browserforge for human-like fingerprinting
 try:
     from browserforge.fingerprints import UserAgent
 except ImportError:
     UserAgent = None
 
-# Load environment variables
+# Load environment variables from .env
 load_dotenv()
 
 # ---------------------------------------------------------------------------
@@ -31,7 +31,7 @@ load_dotenv()
 
 @dataclass
 class ScrapingConfig:
-    """Configuration with extended parameters for maximum resilience."""
+    """Optimized configuration with resilient timeout parameters."""
     target_url: str = os.getenv("TARGET_URL", "https://books.toscrape.com/")
     proxy_list_url: str = os.getenv(
         "PROXY_URL",
@@ -42,18 +42,18 @@ class ScrapingConfig:
         os.getenv("PROFILE_ROOT", Path.home() / ".cloakbrowser_profiles")
     )
     max_total_attempts: int = int(os.getenv("MAX_TOTAL_ATTEMPTS", "20"))
-    browser_launch_timeout: float = float(os.getenv("BROWSER_LAUNCH_TIMEOUT", "12.0"))
+    browser_launch_timeout: float = float(os.getenv("BROWSER_LAUNCH_TIMEOUT", "15.0"))
     page_load_timeout: float = float(os.getenv("PAGE_LOAD_TIMEOUT", "25000"))  # ms
     request_timeout: float = float(os.getenv("REQUEST_TIMEOUT", "30.0"))
-    proxy_validation_timeout: float = float(os.getenv("PROXY_VALIDATION_TIMEOUT", "3.0"))  # seconds
-    max_proxy_validation_concurrency: int = int(os.getenv("MAX_PROXY_VALIDATION_CONCURRENCY", "80"))
-    proxy_cache_ttl: int = int(os.getenv("PROXY_CACHE_TTL", "1800"))  # 30 minutes
+    proxy_validation_timeout: float = float(os.getenv("PROXY_VALIDATION_TIMEOUT", "5.0"))
+    max_proxy_validation_concurrency: int = int(os.getenv("MAX_PROXY_VALIDATION_CONCURRENCY", "60"))
+    proxy_cache_ttl: int = int(os.getenv("PROXY_CACHE_TTL", "1800"))
     delay_between_attempts_min: float = float(os.getenv("DELAY_BETWEEN_ATTEMPTS_MIN", "0.5"))
     delay_between_attempts_max: float = float(os.getenv("DELAY_BETWEEN_ATTEMPTS_MAX", "1.5"))
     max_retries_per_proxy: int = int(os.getenv("MAX_RETRIES_PER_PROXY", "2"))
     retry_backoff_base: float = float(os.getenv("RETRY_BACKOFF_BASE", "1.0"))
-    circuit_breaker_failure_threshold: int = int(os.getenv("CIRCUIT_BREAKER_THRESHOLD", "8"))
-    circuit_breaker_reset_timeout: float = float(os.getenv("CIRCUIT_BREAKER_RESET_TIMEOUT", "15.0"))
+    circuit_breaker_failure_threshold: int = int(os.getenv("CIRCUIT_BREAKER_THRESHOLD", "5"))
+    circuit_breaker_reset_timeout: float = float(os.getenv("CIRCUIT_BREAKER_RESET_TIMEOUT", "30.0"))
     headless: bool = os.getenv("HEADLESS", "true").lower() == "true"
     max_profiles_to_keep: int = int(os.getenv("MAX_PROFILES_TO_KEEP", "10"))
     viewport: dict[str, int] = field(
@@ -64,39 +64,38 @@ class ScrapingConfig:
             "USER_AGENTS",
             (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36,"
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36,"
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             ),
         ).split(","),
     )
 
 # ---------------------------------------------------------------------------
-# Custom Exceptions
+# Exceptions
 # ---------------------------------------------------------------------------
 
 class ScraperError(Exception):
-    """Base exception class."""
+    """Base exception class for the scraping pipeline."""
 
 class ProxyDownloadError(ScraperError):
-    """Failed to download proxy list."""
+    """Raised when downloading the remote proxy list fails."""
 
 class ProxyValidationError(ScraperError):
-    """Proxy validation failed."""
+    """Raised when proxy validation fails to find active proxies."""
 
 class BrowserLaunchError(ScraperError):
-    """Failed to launch browser."""
+    """Raised when the stealth Chromium context fails to initialize."""
 
 class PageLoadError(ScraperError):
-    """Failed to load page."""
+    """Raised when the target page fails to load within the timeout."""
 
 class AntibotBlockedError(ScraperError):
-    """Page blocked by anti-bot protection."""
+    """Raised when anti-bot protection/challenge is detected on the page."""
 
 class DataExtractionError(ScraperError):
-    """Failed to extract data."""
+    """Raised when DOM selector parsing or extraction fails."""
 
 class CircuitBreakerOpenError(ScraperError):
-    """Circuit breaker is open due to error threshold exceeded."""
+    """Raised when the circuit breaker is open due to consecutive failures."""
 
 # ---------------------------------------------------------------------------
 # Structured Logging Setup
@@ -127,14 +126,11 @@ def random_port(start: int = 15000, end: int = 25000) -> int:
     return random.randint(start, end)
 
 def format_socks5_proxy(proxy: str) -> str:
-    """
-    Ensures correct socks5:// protocol usage for Chromium compatibility.
-    """
     clean_proxy = proxy.replace("socks5h://", "").replace("socks5://", "")
     return f"socks5://{clean_proxy}"
 
 # ---------------------------------------------------------------------------
-# Dynamic SOCKS5 Handshake Validator (Protocol-level verification)
+# SOCKS5 Protocol-Level Handshake (Fast TCP Reject)
 # ---------------------------------------------------------------------------
 
 async def validate_socks5_handshake(host: str, port: int, timeout: float) -> bool:
@@ -148,12 +144,10 @@ async def validate_socks5_handshake(host: str, port: int, timeout: float) -> boo
             await writer.drain()
             
             response = await asyncio.wait_for(reader.readexactly(2), timeout=timeout)
-            
             if response == b"\x05\x00":
                 return True
         finally:
             try:
-                # Python 3.13 support: Protecting against possible BrokenPipeError from wait_closed()
                 writer.close()
                 await writer.wait_closed()
             except Exception:
@@ -163,7 +157,7 @@ async def validate_socks5_handshake(host: str, port: int, timeout: float) -> boo
     return False
 
 # ---------------------------------------------------------------------------
-# Profile Storage Guard (Disk memory manager)
+# Async Profile Storage Guard (Disk Protection without blocking Event Loop)
 # ---------------------------------------------------------------------------
 
 class ProfileStorageGuard:
@@ -171,13 +165,17 @@ class ProfileStorageGuard:
         self.config = config
         self.logger = structlog.get_logger(__name__).bind(component="StorageGuard")
 
-    def prune_old_profiles(self) -> None:
+    async def prune_old_profiles(self) -> None:
+        """Delegates heavy filesystem deletion operations to a background thread executor."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._prune_sync)
+
+    def _prune_sync(self) -> None:
         try:
             root = self.config.profile_root
             if not root.exists():
                 return
             
-            # Windows OS compatibility: Only delete profiles not modified in the last 60 seconds
             now = time.time()
             profiles = [p for p in root.iterdir() if p.is_dir() and (now - p.stat().st_mtime) > 60]
             
@@ -185,8 +183,8 @@ class ProfileStorageGuard:
                 return
 
             profiles.sort(key=lambda p: p.stat().st_mtime)
-            
             to_delete = profiles[: len(profiles) - self.config.max_profiles_to_keep]
+            
             for p in to_delete:
                 self.logger.info("Pruning old profile directory to free disk space", path=str(p))
                 shutil.rmtree(p, ignore_errors=True)
@@ -194,7 +192,7 @@ class ProfileStorageGuard:
             self.logger.warning("Failed to prune old profiles", error=str(exc))
 
 # ---------------------------------------------------------------------------
-# Proxy Manager
+# Proxy Manager with Graceful Fallback
 # ---------------------------------------------------------------------------
 
 class ProxyManager:
@@ -239,32 +237,60 @@ class ProxyManager:
             self._cache = {"data": proxies, "timestamp": now}
             return proxies
 
-    async def validate_proxy(self, proxy: str) -> bool:
-        try:
-            parts = proxy.replace("socks5h://", "").replace("socks5://", "").split(":")
-            host = parts[0]
-            port = int(parts[1]) if len(parts) > 1 else 1080
-        except (IndexError, ValueError):
-            return False
-
-        return await validate_socks5_handshake(host, port, self.config.proxy_validation_timeout)
-
     async def filter_proxies(self, proxies: list[str]) -> list[str]:
+        """Runs validation in parallel on two levels, dynamically degraded to TCP-only if WAN checks fail."""
         semaphore = asyncio.Semaphore(self.config.max_proxy_validation_concurrency)
 
-        async def check_one(proxy: str) -> Optional[str]:
+        async def check_one(proxy: str) -> dict[str, Any]:
             async with semaphore:
-                valid = await self.validate_proxy(proxy)
-                return proxy if valid else None
+                try:
+                    parts = proxy.replace("socks5h://", "").replace("socks5://", "").split(":")
+                    host = parts[0]
+                    port = int(parts[1]) if len(parts) > 1 else 1080
+                except (IndexError, ValueError):
+                    return {"proxy": proxy, "tcp_ok": False, "wan_ok": False}
+
+                # Level 1: TCP Handshake Verification
+                tcp_ok = await validate_socks5_handshake(host, port, self.config.proxy_validation_timeout)
+                if not tcp_ok:
+                    return {"proxy": proxy, "tcp_ok": False, "wan_ok": False}
+
+                # Level 2: WAN verification using lightweight Amazon IP lookup (highly responsive, low bandwidth)
+                formatted_proxy = format_socks5_proxy(proxy)
+                try:
+                    async with httpx.AsyncClient(proxies=formatted_proxy, timeout=self.config.proxy_validation_timeout) as client:
+                        response = await client.get("http://checkip.amazonaws.com", follow_redirects=False)
+                        if response.status_code == 200:
+                            return {"proxy": proxy, "tcp_ok": True, "wan_ok": True}
+                except Exception:
+                    pass
+
+                # If TCP handshake succeeds but WAN routing fails (e.g. slow/restrictive proxy)
+                return {"proxy": proxy, "tcp_ok": True, "wan_ok": False}
 
         tasks = [asyncio.create_task(check_one(p)) for p in proxies]
         results = await asyncio.gather(*tasks)
-        valid_proxies = [p for p in results if p is not None]
-        self.logger.info("Proxy filtering complete", total=len(proxies), valid=len(valid_proxies))
-        return valid_proxies
+
+        # Priority 1: Fully functional proxies (SOCKS5 Handshake + WAN Verified)
+        best_proxies = [r["proxy"] for r in results if r["wan_ok"]]
+        if best_proxies:
+            self.logger.info("Proxy filtering complete (WAN validated)", total=len(proxies), valid=len(best_proxies))
+            return best_proxies
+
+        # Priority 2 (Graceful Fallback): SOCKS5 handshake-only verified proxies (prevents pipeline starvation)
+        fallback_proxies = [r["proxy"] for r in results if r["tcp_ok"]]
+        if fallback_proxies:
+            self.logger.warning(
+                "No proxies passed WAN routing check. Falling back to SOCKS5 handshake-only validated proxies to avoid freezing.",
+                total=len(proxies),
+                fallback_count=len(fallback_proxies)
+            )
+            return fallback_proxies
+
+        return []
 
 # ---------------------------------------------------------------------------
-# Browser Manager
+# Browser Management
 # ---------------------------------------------------------------------------
 
 class BrowserManager:
@@ -320,35 +346,11 @@ class BrowserManager:
             except Exception:
                 pass
 
-async def launch_fallback_context(self: Any, proxy: str, port: int, ua: str, p_dir: Path) -> Any:
-    return await asyncio.wait_for(
-        launch_persistent_context_async(
-            user_data_dir=str(p_dir),
-            headless=self.config.headless,
-            proxy=proxy,
-            user_agent=ua,
-            geoip=True,
-            humanize=True,
-            human_preset="careful",
-            viewport=self.config.viewport,
-            args=[
-                f"--remote-debugging-port={port}",
-                "--remote-debugging-address=127.0.0.1",
-                "--disable-dev-shm-usage",
-                "--no-zygote",
-                "--no-sandbox",
-                "--ignore-certificate-errors"
-            ]
-        ),
-        timeout=self.config.browser_launch_timeout
-    )
-
 # ---------------------------------------------------------------------------
-# User-Agent Rotator (with browserforge support)
+# User-Agent Rotation
 # ---------------------------------------------------------------------------
 
 class UserAgentRotator:
-    """Statistically accurate real browser user-agent generator."""
     def __init__(self, fallback_agents: list[str]) -> None:
         self.fallback_agents = fallback_agents
         try:
@@ -387,7 +389,7 @@ class CircuitBreaker:
         self.logger.warning("Circuit breaker failure recorded", count=self.failure_count)
         if self.failure_count >= self.failure_threshold:
             self.state = "open"
-            self.logger.error("Circuit breaker state set to OPEN")
+            self.logger.error("Circuit breaker state set to OPEN due to critical failures")
 
     def record_success(self) -> None:
         self.failure_count = 0
@@ -401,19 +403,8 @@ class CircuitBreaker:
             self.state = "half_open"
             self.logger.info("Circuit breaker entering HALF-OPEN state")
 
-    async def __aenter__(self) -> "CircuitBreaker":
-        await self.before_call()
-        return self
-
-    async def __aexit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any) -> bool:
-        if exc_type is not None:
-            self.record_failure()
-        else:
-            self.record_success()
-        return False
-
 # ---------------------------------------------------------------------------
-# Scraper (Main class)
+# Core Scraper Engine
 # ---------------------------------------------------------------------------
 
 class Scraper:
@@ -438,18 +429,11 @@ class Scraper:
         return page
 
     def _check_antibot_block(self, html: str) -> None:
-        """Analyzes page content for anti-bot blocking indicators."""
         lowercased = html.lower()
         block_indicators = [
-            "just a moment...",
-            "cloudflare",
-            "checking your browser",
-            "ddos protection",
-            "enable javascript",
-            "attention required",
-            "captcha-delivery",
-            "challenge-platform",
-            "access denied"
+            "just a moment...", "cloudflare", "checking your browser",
+            "ddos protection", "enable javascript", "attention required",
+            "captcha-delivery", "challenge-platform", "access denied"
         ]
         if any(ind in lowercased for ind in block_indicators):
             raise AntibotBlockedError("Antibot challenge or access block detected on the target page")
@@ -457,13 +441,9 @@ class Scraper:
     async def _extract_data(self, page_content: str) -> dict[str, Optional[str]]:
         try:
             self._check_antibot_block(page_content)
-            # Using Scrapling's native, fast Selector class
             scrapling_page = Selector(page_content)  
             
-            # Page title
             title = scrapling_page.css("title::text").get()
-            
-            # Book list parsing according to your HTML structure
             books = []
             pods = scrapling_page.css("article.product_pod")
             for pod in pods:
@@ -496,10 +476,7 @@ class Scraper:
                 await BrowserManager.close_context(context)
 
     async def scrape(self, shutdown_event: asyncio.Event) -> dict[str, Optional[str]]:
-        """
-        Executes the main scraping loop.
-        If all proxies are blocked, automatically refreshes the list dynamically.
-        """
+        """Executes the core scraping loop governed by a globally bounded attempts tracker."""
         force_refresh = False
         total_attempts = 0
 
@@ -507,7 +484,12 @@ class Scraper:
             if shutdown_event.is_set():
                 raise ScraperError("Shutdown requested by system")
 
-            self.storage_guard.prune_old_profiles()
+            # Async cleanup to prevent Event Loop blockages
+            await self.storage_guard.prune_old_profiles()
+
+            # Every download/validation cycle decreases remaining global attempts
+            total_attempts += 1
+            self.logger.info("Starting scrape cycle", cycle_attempt=total_attempts, max_attempts=self.config.max_total_attempts)
 
             try:
                 raw_proxies = await self.proxy_manager.get_proxies(force_refresh=force_refresh)
@@ -534,28 +516,31 @@ class Scraper:
                 profile_dir = self.config.profile_root / f"profile_{proxy_hash}"
                 profile_dir.mkdir(parents=True, exist_ok=True)
 
+                # Query Circuit Breaker state before browser initialization
+                await self.circuit_breaker.before_call()
+
                 for attempt in range(1, self.config.max_retries_per_proxy + 1):
                     if shutdown_event.is_set():
                         raise ScraperError("Shutdown requested by system")
 
-                    total_attempts += 1
-                    self.logger.info("Attempting scrape cycle", proxy=proxy, attempt=attempt, total=total_attempts)
+                    self.logger.info("Attempting scrape with proxy", proxy=proxy, attempt=attempt)
 
-                    async with self.circuit_breaker:
-                        try:
-                            data = await self.scrape_with_proxy(proxy, profile_dir)
-                            return data
-                        except AntibotBlockedError as exc:
-                            self.logger.warning("Proxy was flagged/blocked by antibot, discarding", proxy=proxy, error=str(exc))
-                            break
-                        except (asyncio.TimeoutError, BrowserLaunchError, PageLoadError) as exc:
-                            self.logger.warning("Transient network failure on proxy", proxy=proxy, error=str(exc))
-                            if attempt < self.config.max_retries_per_proxy:
-                                delay = self.config.retry_backoff_base * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
-                                await asyncio.sleep(delay)
-                        except Exception as exc:
-                            self.logger.error("Unexpected error, shifting proxy", error=str(exc))
-                            break
+                    try:
+                        data = await self.scrape_with_proxy(proxy, profile_dir)
+                        self.circuit_breaker.record_success()
+                        return data
+                    except AntibotBlockedError as exc:
+                        self.logger.warning("Proxy was flagged/blocked by antibot, discarding", proxy=proxy, error=str(exc))
+                        self.circuit_breaker.record_failure()
+                        break
+                    except (asyncio.TimeoutError, BrowserLaunchError, PageLoadError) as exc:
+                        self.logger.warning("Transient network failure on proxy", proxy=proxy, error=str(exc))
+                        if attempt < self.config.max_retries_per_proxy:
+                            delay = self.config.retry_backoff_base * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                            await asyncio.sleep(delay)
+                    except Exception as exc:
+                        self.logger.error("Unexpected error, shifting proxy", error=str(exc))
+                        break
 
                 await asyncio.sleep(random.uniform(self.config.delay_between_attempts_min, self.config.delay_between_attempts_max))
 
@@ -564,7 +549,7 @@ class Scraper:
         raise ScraperError("Max scraping attempts reached without successful data extraction")
 
 # ---------------------------------------------------------------------------
-# Graceful Shutdown & Zombie Process Reap
+# Signal Handling
 # ---------------------------------------------------------------------------
 
 def setup_signal_handlers(loop: asyncio.AbstractEventLoop, shutdown_event: asyncio.Event) -> None:
@@ -572,17 +557,17 @@ def setup_signal_handlers(loop: asyncio.AbstractEventLoop, shutdown_event: async
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 loop.add_signal_handler(sig, shutdown_event.set)
-            except ValueError:
+            except (ValueError, NotImplementedError):
                 pass
 
 # ---------------------------------------------------------------------------
-# Main Entry
+# Execution Entry Point
 # ---------------------------------------------------------------------------
 
 async def main() -> None:
     setup_logging()
     logger = structlog.get_logger(__name__)
-    logger.info("Unstoppable CloakBrowser-Scrapling Scraper Initialized")
+    logger.info("Resilient CloakBrowser-Scrapling Scraper Initialized")
 
     config = ScrapingConfig()
     shutdown_event = asyncio.Event()
@@ -619,8 +604,8 @@ async def main() -> None:
                     pass
             else:
                 data = scrape_task.result()
-                logger.info("Unstoppable Scraper Executed Successfully")
-                print(f"\n[SUCCESS] Highly Resilient Extracted Data: {data}")
+                logger.info("Scraper Engine Executed Successfully")
+                print(f"\n[SUCCESS] Extracted Payload: {data}")
 
         except CircuitBreakerOpenError as exc:
             logger.critical("Fatal: Circuit Breaker Open, Scraper Aborted", error=str(exc))
@@ -638,7 +623,7 @@ async def main() -> None:
             if not shutdown_event.is_set():
                 shutdown_event.set()
 
-    logger.info("Graceful execution complete. Goodbye.")
+    logger.info("Graceful execution complete.")
 
 if __name__ == "__main__":
     asyncio.run(main())
